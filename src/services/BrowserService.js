@@ -31,6 +31,8 @@ class BrowserService {
         });
         const page = await context.newPage();
 
+        const mainHost = new URL(url).host;
+
         // Using 'response' instead of 'request' to capture the actual content 
         // that the browser successfully received.
         page.on('response', async (response) => {
@@ -38,9 +40,15 @@ class BrowserService {
             const requestUrl = request.url();
             const resourceType = request.resourceType();
             const status = response.status();
+            const requestHost = new URL(requestUrl).host;
 
             // Ignore failures and common noise
-            if (status !== 200 || requestUrl.includes('google-analytics.com') || resourceType === 'font') {
+            if (status < 200 || status >= 400 || requestUrl.includes('google-analytics.com')) {
+                return;
+            }
+
+            // Only capture requests to the main domain or its subdomains
+            if (!requestHost.endsWith(mainHost)) {
                 return;
             }
 
@@ -59,15 +67,15 @@ class BrowserService {
                 try {
                     // Grab content directly from the browser's memory
                     const jsContent = await response.text();
-                    console.log(`>> Captured JS Content: ${requestUrl.substring(0, 60)}...`);
+                    console.log(`>> Captured JS Content: ${requestUrl.substring(0, 80)}...`);
                     onData('js', { ...requestData, content: jsContent });
                 } catch (error) {
                     // Some responses (like redirects) can't have their text read
                 }
             } 
-            // Detect JSON or WebSockets
-            else if (resourceType === 'fetch' || resourceType === 'websocket' || requestUrl.includes('/ws') || requestUrl.endsWith('.json')) {
-                console.log(`>> Discovered Path: ${requestUrl.substring(0, 60)}...`);
+            // Capture all other relevant API/data requests
+            else if (!['document', 'stylesheet', 'image', 'font', 'media'].includes(resourceType)) {
+                console.log(`>> Discovered Path: [${resourceType}] ${requestUrl}`);
                 onData('path', requestData);
             }
         });

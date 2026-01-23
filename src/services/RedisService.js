@@ -32,9 +32,8 @@ class RedisService {
         return this.redis.hgetall(`vendor:${vendor}:variables`);
     }
 
-    async addVariable(variable, association, vendor) {
+    async addVariable(vendor, variable, association) {
         await this.redis.hset(`vendor:${vendor}:variables`, variable, association);
-        console.log(`+ Variable [${variable}] saved to Redis`);
     }
 
     async disconnect() {
