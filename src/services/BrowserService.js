@@ -84,8 +84,8 @@ class BrowserService {
             await page.waitForTimeout(15000); 
             
             // Optional: Take a screenshot to see what the browser is seeing
-            await page.screenshot({ path: 'last_scan.png' });
-            console.log("Screenshot saved as last_scan.png");
+            // await page.screenshot({ path: 'last_scan.png' });
+            // console.log("Screenshot saved as last_scan.png");
 
         } catch (error) {
             console.error(`Navigation error: ${error.message}`);
