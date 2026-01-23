@@ -1,4 +1,4 @@
 .env
 node_modules/
 output/
-*.png
+last_scan.png
