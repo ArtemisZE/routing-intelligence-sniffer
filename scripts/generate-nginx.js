@@ -17,7 +17,7 @@ async function generateConfig() {
         const paths = await redis.getPaths(vendor);
         const variables = await redis.getVariables(vendor);
 
-        // Generate the Lua Gsub lines based on Redis variables
+        // 1. Generate the Lua Gsub lines based on Redis variables
         let luaReplacements = "";
         if (variables) {
             Object.entries(variables).forEach(([varName, associationData]) => {
@@ -34,28 +34,33 @@ async function generateConfig() {
             });
         }
 
-        // Generate Location blocks for discovered API paths
+        // 2. Generate API Location Blocks using Variables
         let apiLocations = "";
         const uniquePaths = [...new Set(paths.map(p => {
             const urlObj = new URL(p.url);
             const parts = urlObj.pathname.split('/');
-            return `/${parts[1]}/${parts[2]}`; // e.g., /server/services
+            return `/${parts[1]}/${parts[2]}`; 
         }))];
 
         uniquePaths.forEach(p => {
             apiLocations += `
         location ${p} {
-            proxy_pass https://${proxyDomain};
-            proxy_set_header Host ${proxyDomain};
+            set $upstream_target "${proxyDomain}";
+            proxy_pass https://$upstream_target;
+            proxy_set_header Host $upstream_target;
             proxy_set_header X-Forwarded-Proto $scheme;
         }\n`;
         });
 
-        // The Full Template
-        const fullConfig = `events {}
+        // 3. The Full Template
+        const fullConfig = `events {
+    worker_connections 1024;
+}
 
 http {
-    resolver 1.1.1.1 8.8.8.8 valid=60s;
+    # This is required when using variables in proxy_pass
+    resolver 8.8.8.8 1.1.1.1 valid=300s;
+    resolver_timeout 5s;
 
     server {
         listen 8080;
@@ -76,23 +81,26 @@ http {
                 local http = require "resty.http"
                 local httpc = http.new()
 
-                local res, err = httpc:request_uri("https://${proxyDomain}" .. ngx.var.request_uri, {
+                -- Use local variable to avoid startup check
+                local target_domain = "${proxyDomain}"
+
+                local res, err = httpc:request_uri("https://" .. target_domain .. ngx.var.request_uri, {
                     method = "GET",
                     ssl_verify = false,
                     headers = {
-                        ["Host"] = "${proxyDomain}",
+                        ["Host"] = target_domain,
                         ["Accept-Encoding"] = ""
                     }
                 })
 
                 if not res then
+                    ngx.log(ngx.ERR, "Failed to fetch JS: ", err)
                     ngx.status = 502
                     ngx.say("Error fetching resource")
                     return
                 end
 
                 local body = res.body
-
 ${luaReplacements}
                 ngx.header["Content-Type"] = "application/javascript"
                 ngx.say(body)
@@ -102,8 +110,9 @@ ${luaReplacements}
 ${apiLocations}
         # Default proxy
         location / {
-            proxy_pass https://${proxyDomain};
-            proxy_set_header Host ${proxyDomain};
+            set $default_target "${proxyDomain}";
+            proxy_pass https://$default_target;
+            proxy_set_header Host $default_target;
             proxy_set_header X-Forwarded-Proto $scheme;
         }
     }
@@ -114,7 +123,7 @@ ${apiLocations}
         if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
         fs.writeFileSync(path.join(outputDir, `nginx.conf`), fullConfig);
 
-        console.log(`Success! Generated full nginx.conf in: ${outputDir}`);
+        console.log(`Success! Generated nginx.conf with startup-safety in: ${outputDir}`);
 
     } catch (error) {
         console.error('Generation failed:', error);
