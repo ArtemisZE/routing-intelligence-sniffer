@@ -18,7 +18,19 @@ async function generateConfig() {
         const variables = await redis.getVariables(vendor);
 
         // 1. Generate the Lua Gsub lines based on Redis variables
-        let luaReplacements = "";
+        let luaReplacements = `
+                        -- Global Domain Replacement
+                        local vendor_domain = "playint.tableslive.com"
+                        local proxy_host = ngx.var.http_host or "localhost:8080"
+
+                        -- Escape dots for Lua pattern
+                        local escaped_vendor = vendor_domain:gsub("%.", "%%.")
+
+                        body = body:gsub("https://" .. escaped_vendor, "http://" .. proxy_host)
+                        body = body:gsub("http://" .. escaped_vendor, "http://" .. proxy_host)
+        `;
+
+        // 2. Keep the specific variable replacements as a backup
         if (variables) {
             Object.entries(variables).forEach(([varName, associationData]) => {
                 let associations = JSON.parse(associationData);
@@ -26,10 +38,9 @@ async function generateConfig() {
                 const assocArray = Array.isArray(associations) ? associations : [associations];
 
                 assocArray.forEach(assoc => {
-                    // Logic: body = body:gsub('r%.api%s*=%s*["\'][^"\']+["\']', 'r.api = "https://' .. ngx.var.http_host .. '"')
                     const pattern = `${varName}%.${assoc.property}`;
-                    luaReplacements += `                -- Detected Variable: ${varName}.${assoc.property}\n`;
-                    luaReplacements += `                body = body:gsub('${pattern}%%s*=%%s*["\'][^"\']+["\']', '${varName}.${assoc.property} = "https://' .. ngx.var.http_host .. '"')\n`;
+                    luaReplacements += `                -- Variable fallback: ${varName}.${assoc.property}\n`;
+                    luaReplacements += `                body = body:gsub('${pattern}%%s*=%%s*["\'][^"\']+["\']', '${varName}.${assoc.property} = "' .. proxy_host .. '"')\n`;
                 });
             });
         }
@@ -44,80 +55,79 @@ async function generateConfig() {
 
         uniquePaths.forEach(p => {
             apiLocations += `
-        location ${p} {
-            set $upstream_target "${proxyDomain}";
-            proxy_pass https://$upstream_target;
-            proxy_set_header Host $upstream_target;
-            proxy_set_header X-Forwarded-Proto $scheme;
-        }\n`;
-        });
+                location ${p} {
+                    set $upstream_target "${proxyDomain}";
+                    proxy_pass https://$upstream_target;
+                    proxy_set_header Host $upstream_target;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }\n`;
+            });
 
-        // 3. The Full Template
-        const fullConfig = `events {
-    worker_connections 1024;
-}
-
-http {
-    # This is required when using variables in proxy_pass
-    resolver 8.8.8.8 1.1.1.1 valid=300s;
-    resolver_timeout 5s;
-
-    server {
-        listen 8080;
-        server_name _;
-        server_tokens off;
-
-        proxy_ssl_server_name on;
-        proxy_http_version 1.1;
-
-        location = /health {
-            default_type text/plain;
-            return 200 "ok";
+            // 3. The Full Template
+            const fullConfig = `events {
+            worker_connections 1024;
         }
 
-        # Dynamic JS Interceptor for ${vendor}
-        location ~* ^/.*\\.js$ {
-            content_by_lua_block {
-                local http = require "resty.http"
-                local httpc = http.new()
+        http {
+            resolver 8.8.8.8 1.1.1.1 valid=300s;
+            resolver_timeout 5s;
 
-                -- Use local variable to avoid startup check
-                local target_domain = "${proxyDomain}"
+            server {
+                listen 8080;
+                server_name _;
+                server_tokens off;
 
-                local res, err = httpc:request_uri("https://" .. target_domain .. ngx.var.request_uri, {
-                    method = "GET",
-                    ssl_verify = false,
-                    headers = {
-                        ["Host"] = target_domain,
-                        ["Accept-Encoding"] = ""
+                proxy_ssl_server_name on;
+                proxy_http_version 1.1;
+
+                location = /health {
+                    default_type text/plain;
+                    return 200 "ok";
+                }
+
+                # 1. JS Interceptor Block
+                location ~* ^/.*\\.js$ {
+                    content_by_lua_block {
+                        local http = require "resty.http"
+                        local httpc = http.new()
+                        local target_domain = "playint.tableslive.com" 
+
+                        local res, err = httpc:request_uri("https://" .. target_domain .. ngx.var.request_uri, {
+                            method = "GET",
+                            ssl_verify = false,
+                            headers = {
+                                ["Host"] = target_domain,
+                                ["Accept-Encoding"] = "" 
+                            }
+                        })
+
+                        if not res then
+                            ngx.log(ngx.ERR, "Failed to fetch JS: ", err)
+                            ngx.status = 502
+                            ngx.say("Error")
+                            return
+                        end
+
+                        local body = res.body
+        ${luaReplacements}
+                        ngx.header["Content-Type"] = "application/javascript"
+                        ngx.say(body)
                     }
-                })
+                } # END OF JS BLOCK
 
-                if not res then
-                    ngx.log(ngx.ERR, "Failed to fetch JS: ", err)
-                    ngx.status = 502
-                    ngx.say("Error fetching resource")
-                    return
-                end
+                # 2. API/Path Blocks (Now safely outside the JS block)
+        ${apiLocations}
 
-                local body = res.body
-${luaReplacements}
-                ngx.header["Content-Type"] = "application/javascript"
-                ngx.say(body)
+                # 3. Default proxy
+                location / {
+                    set $default_target "playint.tableslive.com";
+                    proxy_pass https://$default_target;
+                    proxy_set_header Host $default_target;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
             }
         }
-
-${apiLocations}
-        # Default proxy
-        location / {
-            set $default_target "${proxyDomain}";
-            proxy_pass https://$default_target;
-            proxy_set_header Host $default_target;
-            proxy_set_header X-Forwarded-Proto $scheme;
-        }
-    }
-}
-`;
+    `;
 
         const outputDir = path.join(__dirname, '../output', vendor);
         if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
