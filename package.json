@@ -1,0 +1,29 @@
+{
+  "name": "routing-intelligence-sniffer",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ArtemisZE/routing-intelligence-sniffer.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/ArtemisZE/routing-intelligence-sniffer/issues"
+  },
+  "homepage": "https://github.com/ArtemisZE/routing-intelligence-sniffer#readme",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "ioredis": "^5.9.2",
+    "playwright": "^1.57.0"
+  }
+}
