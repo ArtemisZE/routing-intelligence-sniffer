@@ -52,15 +52,13 @@ async function generateConfig() {
                         -- Global Domain Replacement
                         local vendor_domain = "${proxyDomain}"
                         local proxy_host = ngx.var.http_host or "localhost:8080"
-
-                        -- Escape dots for Lua pattern
                         local escaped_vendor = vendor_domain:gsub("%.", "%%.")
 
                         body = body:gsub("https://" .. escaped_vendor, "http://" .. proxy_host)
                         body = body:gsub("http://" .. escaped_vendor, "http://" .. proxy_host)
         `;
 
-        // 2. Keep the specific variable replacements as a backup
+        // 2. Dynamically add variable replacements from Redis
         if (variables) {
             Object.entries(variables).forEach(([varName, associationData]) => {
                 let associations = JSON.parse(associationData);
@@ -68,9 +66,9 @@ async function generateConfig() {
                 const assocArray = Array.isArray(associations) ? associations : [associations];
 
                 assocArray.forEach(assoc => {
-                    const pattern = `${varName}%.${assoc.property}`;
-                    luaReplacements += `                -- Variable fallback: ${varName}.${assoc.property}\n`;
-                    luaReplacements += `                body = body:gsub('${pattern}%%s*=%%s*["\'][^"\']+["\']', '${varName}.${assoc.property} = "' .. proxy_host .. '"')\n`;
+                    const luaVarPath = `${varName}%.${assoc.property}`;
+                    
+                    luaReplacements += `                        body = body:gsub('${luaVarPath}%%s*=%%s*["\\'][^"\\']+["\\']', '${varName}.${assoc.property} = "http://" .. proxy_host')\n`;
                 });
             });
         }
