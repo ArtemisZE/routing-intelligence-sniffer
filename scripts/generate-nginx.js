@@ -8,28 +8,17 @@ function getGeneralizedPath(pathname) {
     const staticParts = [];
 
     for (const part of parts) {
-        // A simple heuristic for dynamic parts:
-        // - contains numbers and is long (e.g., user IDs, timestamps)
-        // - looks like a hash (hex characters)
-        // - is a UUID
         if (/\d/.test(part) && part.length > 6 || /[a-f0-9]{16,}/.test(part) || /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(part)) {
-            break; // Stop at the first dynamic-looking part
+            break; 
         }
         staticParts.push(part);
     }
 
-    if (staticParts.length === 0 && parts.length > 0) {
-         // If the very first part is dynamic, use it to create a location block.
-        return `/${parts[0]}`;
-    }
-    
+    if (staticParts.length === 0 && parts.length > 0) return `/${parts[0]}`;
     if (staticParts.length < parts.length) {
-        // We found a dynamic part, so create a regex location
         const basePath = `/${staticParts.join('/')}`;
         return `~* ^${basePath}/.*`;
     }
-
-    // All parts seem static, return the full path
     return `/${parts.join('/')}`;
 }
 
@@ -47,9 +36,10 @@ async function generateConfig() {
         const paths = await redis.getPaths(vendor);
         const variables = await redis.getVariables(vendor);
 
-        // 1. Generate the Lua Gsub lines based on Redis variables
-        let luaReplacements = `
-                        -- Global Domain Replacement
+        // ---------------------------------------------------------
+        // 1. JS Surgery Logic (Variable Replacements)
+        // ---------------------------------------------------------
+        let luaJsReplacements = `
                         local vendor_domain = "${proxyDomain}"
                         local proxy_host = ngx.var.http_host or "localhost:8080"
                         local escaped_vendor = vendor_domain:gsub("%.", "%%.")
@@ -58,7 +48,6 @@ async function generateConfig() {
                         body = body:gsub("http://" .. escaped_vendor, "http://" .. proxy_host)
         `;
 
-        // 2. Dynamically add variable replacements from Redis
         if (variables) {
             Object.entries(variables).forEach(([varName, associationData]) => {
                 let associations = JSON.parse(associationData);
@@ -67,13 +56,36 @@ async function generateConfig() {
 
                 assocArray.forEach(assoc => {
                     const luaVarPath = `${varName}%.${assoc.property}`;
-                    
-                    luaReplacements += `                        body = body:gsub('${luaVarPath}%%s*=%%s*["\\'][^"\\']+["\\']', '${varName}.${assoc.property} = "http://" .. proxy_host')\n`;
+                    luaJsReplacements += `                        body = body:gsub('${luaVarPath}%%s*=%%s*["\\'][^"\\']+["\\']', '${varName}.${assoc.property} = "http://" .. proxy_host')\n`;
                 });
             });
         }
 
-        // 2. Generate API Location Blocks using Variables
+        // ---------------------------------------------------------
+        // 2. HTML Surgery Logic (The "Anti-Redirect" Block)
+        // ---------------------------------------------------------
+        // We use a safe wrapper to avoid breaking the page syntax
+        let luaHtmlReplacements = `
+                        local vendor = "${proxyDomain}"
+                        local proxy = ngx.var.http_host or "localhost:8080"
+                        local escaped_vendor = vendor:gsub("%.", "%%.")
+
+                        -- 1. Replace Domains
+                        buffered = buffered:gsub("https://" .. escaped_vendor, "http://" .. proxy)
+                        
+                        -- 2. KILL REDIRECTS (The "Void" Technique)
+                        -- Instead of console.log, we replace the setter with a dummy operation
+                        -- Matches: window.location.href = "..."
+                        buffered = buffered:gsub("window%.location%.href%s*=", "var blocked_redirect = ")
+                        buffered = buffered:gsub("window%.top%.location%.href%s*=", "var blocked_top_redirect = ")
+                        
+                        -- Matches: window.location.replace("...")
+                        buffered = buffered:gsub("window%.location%.replace", "console.log")
+        `;
+
+        // ---------------------------------------------------------
+        // 3. Generate API Location Blocks
+        // ---------------------------------------------------------
         let apiLocations = "";
         const uniquePaths = [...new Set(paths.map(p => getGeneralizedPath(new URL(p.url).pathname)))];
 
@@ -82,12 +94,16 @@ async function generateConfig() {
                 location ${p} {
                     set $upstream_target "${proxyDomain}";
                     proxy_pass https://$upstream_target;
+                    
                     proxy_set_header Host $upstream_target;
                     proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_cookie_domain $upstream_target $host;
                 }\n`;
             });
 
-            // 3. The Full Template
+        // ---------------------------------------------------------
+        // 4. The Final Nginx Config
+        // ---------------------------------------------------------
             const fullConfig = `events {
             worker_connections 1024;
         }
@@ -95,6 +111,11 @@ async function generateConfig() {
         http {
             resolver 8.8.8.8 1.1.1.1 valid=300s;
             resolver_timeout 5s;
+            
+            # Increase buffer size for large headers/cookies
+            proxy_buffer_size   128k;
+            proxy_buffers   4 256k;
+            proxy_busy_buffers_size   256k;
 
             server {
                 listen 8080;
@@ -105,11 +126,10 @@ async function generateConfig() {
                 proxy_http_version 1.1;
 
                 location = /health {
-                    default_type text/plain;
                     return 200 "ok";
                 }
 
-                # 1. JS Interceptor Block
+                # 1. JS Interceptor
                 location ~* ^/.*\\.js$ {
                     content_by_lua_block {
                         local http = require "resty.http"
@@ -126,28 +146,62 @@ async function generateConfig() {
                         })
 
                         if not res then
-                            ngx.log(ngx.ERR, "Failed to fetch JS: ", err)
                             ngx.status = 502
-                            ngx.say("Error")
+                            ngx.say("Error fetching JS")
                             return
                         end
 
                         local body = res.body
-        ${luaReplacements}
+${luaJsReplacements}
                         ngx.header["Content-Type"] = "application/javascript"
                         ngx.say(body)
                     }
-                } # END OF JS BLOCK
+                }
 
-                # 2. API/Path Blocks (Now safely outside the JS block)
-        ${apiLocations}
+                # 2. Specific API Blocks
+${apiLocations}
 
-                # 3. Default proxy
+                # 3. HTML Interceptor (Root & Everything Else)
                 location / {
-                    set $default_target "${proxyDomain}";
-                    proxy_pass https://$default_target;
-                    proxy_set_header Host $default_target;
+                    set $upstream_target "${proxyDomain}";
+                    proxy_pass https://$upstream_target;
+                    
+                    # Pass headers correctly
+                    proxy_set_header Host $upstream_target;
                     proxy_set_header X-Forwarded-Proto $scheme;
+                    
+                    # Ensure we can read the body to modify it (disable compression from server)
+                    proxy_set_header Accept-Encoding "";
+
+                    # Handle Cookies so login works
+                    proxy_cookie_domain $upstream_target $host;
+                    proxy_cookie_path / /;
+
+                    # Strip Security Headers that block iframe/proxying
+                    header_filter_by_lua_block {
+                        ngx.header["Content-Security-Policy"] = nil
+                        ngx.header["X-Frame-Options"] = nil
+                        ngx.header["X-Content-Type-Options"] = nil
+                    }
+
+                    # Modify HTML on the fly
+                    body_filter_by_lua_block {
+                        local chunk = ngx.arg[1]
+                        local eof = ngx.arg[2]
+                        local buffered = ngx.ctx.buffered or ""
+                        
+                        if chunk then
+                            buffered = buffered .. chunk
+                        end
+                        
+                        if eof then
+                            ${luaHtmlReplacements}
+                            ngx.arg[1] = buffered
+                        else
+                            ngx.arg[1] = nil
+                        end
+                        ngx.ctx.buffered = buffered
+                    }
                 }
             }
         }
@@ -157,7 +211,7 @@ async function generateConfig() {
         if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
         fs.writeFileSync(path.join(outputDir, `nginx.conf`), fullConfig);
 
-        console.log(`Success! Generated nginx.conf with startup-safety in: ${outputDir}`);
+        console.log(`✅ Success! Generated nginx.conf with Stream-Based Surgery.`);
 
     } catch (error) {
         console.error('Generation failed:', error);
