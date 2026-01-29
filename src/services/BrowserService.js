@@ -88,8 +88,8 @@ class BrowserService {
             
             console.log("Page loaded. Waiting 15 seconds for game engine to boot and authenticate...");
             
-            // This is the critical "Handshake Wait" for Evoplay/Pragmatic
-            await page.waitForTimeout(15000); 
+            // This is the critical "Handshake Wait"
+            await page.waitForTimeout(60000); 
             
             // Optional: Take a screenshot to see what the browser is seeing
             // await page.screenshot({ path: 'last_scan.png' });
