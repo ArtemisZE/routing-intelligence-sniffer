@@ -22,10 +22,43 @@ function getGeneralizedPath(pathname) {
     return `/${parts.join('/')}`;
 }
 
+function findTargetDomain(paths) {
+    if (!paths || paths.length === 0) {
+        return null;
+    }
+
+    const hostCounts = new Map();
+
+    paths.forEach(p => {
+        try {
+            const host = new URL(p.url).hostname;
+            hostCounts.set(host, (hostCounts.get(host) || 0) + 1);
+        } catch (e) {
+            console.error(`Skipping invalid URL in paths: ${p.url}`);
+        }
+    });
+
+    if (hostCounts.size === 0) {
+        return null;
+    }
+
+    let maxCount = 0;
+    let dominantHost = '';
+
+    for (const [host, count] of hostCounts.entries()) {
+        if (count > maxCount) {
+            maxCount = count;
+            dominantHost = host;
+        }
+    }
+
+    return dominantHost;
+}
+
 async function generateConfig() {
     const args = process.argv.slice(2);
-    if (args.length !== 2) {
-        console.error('Usage: node scripts/generate-nginx.js <vendor_name> <proxy_domain>');
+    if (args.length !== 1) {
+        console.error('Usage: node scripts/generate-nginx.js <vendor_name>');
         process.exit(1);
     }
 
@@ -35,6 +68,15 @@ async function generateConfig() {
     try {
         const paths = await redis.getPaths(vendor);
         const variables = await redis.getVariables(vendor);
+
+        const proxyDomain = findTargetDomain(paths);  
+        if (!proxyDomain) {
+            console.error(`Could not determine target domain for vendor "${vendor}".`);
+            console.error('Please run the sniffer first (\`node src/index.js ...\`) to gather path data.');
+            process.exit(1);
+        }
+
+        console.log(`Auto-detected Target Domain for ${vendor}: ${proxyDomain}`);
 
         // ---------------------------------------------------------
         // 1. JS Surgery Logic (Variable Replacements)
