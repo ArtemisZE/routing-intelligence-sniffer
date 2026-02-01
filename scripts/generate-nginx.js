@@ -56,16 +56,16 @@ async function generateConfig() {
         // We serve the shield script via a dedicated location using Lua to avoid NGINX escaping hell.
         // The script is embedded in the config inside a content_by_lua_block.
         const shieldScript = `
-(function(){
-  'use strict';
-  if(window.__ps)return;window.__ps=true;
-  const h=window.location.host;
-  window.__webpack_public_path__='https://'+h+'/';
-  const fx=u=>{${jsReplaceLogic}};
-  const oF=window.fetch;window.fetch=(i,o)=>{const u=typeof i==='string'?i:(i&&i.url);return oF(fx(u)||i,o);};
-  const oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u,...a){return oX.call(this,m,fx(u),...a);};
-  const oW=window.WebSocket;window.WebSocket=function(u,p){return new oW(fx(u),p);};
-})();`.replace(/\n/g, ''); // Minify slightly by removing newlines
+        (function(){
+        'use strict';
+        if(window.__ps)return;window.__ps=true;
+        const h=window.location.host;
+        window.__webpack_public_path__='https://'+h+'/';
+        const fx=u=>{${jsReplaceLogic}};
+        const oF=window.fetch;window.fetch=(i,o)=>{const u=typeof i==='string'?i:(i&&i.url);return oF(fx(u)||i,o);};
+        const oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u,...a){return oX.call(this,m,fx(u),...a);};
+        const oW=window.WebSocket;window.WebSocket=function(u,p){return new oW(fx(u),p);};
+        })();`.replace(/\n/g, ''); // Minify slightly by removing newlines
 
         // --- 2. Construct NGINX sub_filters ---
         // These handle the static HTML/JS text replacements on the server side.
@@ -171,7 +171,7 @@ async function generateConfig() {
         if (fs.existsSync(path.join(outputDir, `shield.js`))) fs.unlinkSync(path.join(outputDir, `shield.js`));
         if (fs.existsSync(path.join(outputDir, `replacements.lua`))) fs.unlinkSync(path.join(outputDir, `replacements.lua`));
 
-        console.log(`✅ Success! Generated self-contained nginx.conf`);
+        console.log(`Generated nginx.conf for vendor "${vendor}" at ${outputDir}/nginx.conf.`);
 
     } catch (error) {
         console.error('Generation failed:', error);

@@ -37,14 +37,14 @@ This script creates the final, self-contained proxy configuration.
 *   **Actions:**
     1.  **Fetch Intelligence:** It reads all data for the `<vendor_name>` from Redis (`metadata`, `paths`, `domains`, `variables`).
     2.  **Domain Logic:** It identifies the `primaryDomain` from the metadata and compiles a list of all other unique `secondaryDomains`.
-    3.  **Generate `nginx.conf`:** It constructs a single configuration file with the following features, inspired by production examples:
-        *   **Path-Based Routing:** For each unique path discovered, it generates a specific `location /path/to/asset { ... }` block that `proxy_pass`es the request to the correct upstream host (retrieved from the `paths` data). This ensures `engine.livetables.io` requests go to the right place.
+    3.  **Generate `nginx.conf`:** It constructs a single configuration file with the following features:
+        *   **Path-Based Routing:** For each unique path discovered, it generates a specific `location /path/to/asset { ... }` block that `proxy_pass`es the request to the correct upstream host.
         *   **Fallback to Primary:** A root `location / { ... }` acts as a fallback, proxying any unknown paths to the `primaryDomain`.
-        *   **WebSocket Support:** All generated `location` blocks include the necessary `Upgrade` and `Connection` headers to correctly proxy WebSockets.
-        *   **Body Rewriting (Simplified):** It uses `body_filter_by_lua_block` on the root `location /` and on any other text-based locations (like JS files). This **inlined** Lua script is responsible for:
-            *   **Multi-Domain Replacement:** Iterating through *all* discovered domains (primary and secondary) and replacing them with the proxy's address (`$http_host`).
-            *   **Variable Injection:** Replacing dynamic variable assignments (e.g., `r.api = "..."`) using the data from Redis.
-            *   **Shield Injection:** A minified, single-line version of the client-side "Shield" JavaScript is embedded directly inside the Lua block and injected into the `<head>` of the initial HTML document. This is safer than using a massive `sub_filter`.
-        *   **Header Cleaning:** It uses `header_filter_by_lua_block` to remove the `Content-Length` header on modified responses, preventing content truncation errors. It also strips security headers like `Content-Security-Policy` and `X-Frame-Options`.
+        *   **Shield Script Injection (Robust):**
+            *   Instead of complex inline escaping, the "Shield" JavaScript (responsible for client-side URL rewriting) is served from a dedicated internal location: `location = /__shield.js`.
+            *   This location uses `content_by_lua_block` with Lua's long-bracket syntax `[==[ ... ]==]` to safely serve the script without escaping issues.
+            *   A `sub_filter` directive injects `<script src='/__shield.js'></script>` into the `<head>` of HTML responses.
+        *   **Static Replacements:** It uses `sub_filter` to iterate through *all* discovered domains and replace them with the proxy's address (`$http_host`) in HTML, JS, and JSON responses.
+        *   **Header Cleaning:** It uses `header_filter_by_lua_block` to remove `Content-Length` (to prevent truncation after modification) and security headers like `Content-Security-Policy` and `X-Frame-Options` (to allow iframe usage).
 
-This architecture ensures that **no manual domain input is required** (as long as the sniffer runs successfully) and the output is a **single, deployable `nginx.conf` file**, fulfilling your request for simplicity and automation.
+This architecture ensures that **no manual domain input is required** and the output is a **single, deployable `nginx.conf` file**.
