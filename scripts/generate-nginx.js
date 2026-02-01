@@ -166,10 +166,6 @@ async function generateConfig() {
         if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
         
         fs.writeFileSync(path.join(outputDir, `nginx.conf`), fullConfig);
-        
-        // Remove old external files to avoid confusion
-        if (fs.existsSync(path.join(outputDir, `shield.js`))) fs.unlinkSync(path.join(outputDir, `shield.js`));
-        if (fs.existsSync(path.join(outputDir, `replacements.lua`))) fs.unlinkSync(path.join(outputDir, `replacements.lua`));
 
         console.log(`Generated nginx.conf for vendor "${vendor}" at ${outputDir}/nginx.conf.`);
 
