@@ -31,28 +31,23 @@ class BrowserService {
         });
         const page = await context.newPage();
 
-        const mainHost = new URL(url).host;
+        // Store active requests to associate with responses later
+        const activeRequests = new Map();
 
-        // Using 'response' instead of 'request' to capture the actual content 
-        // that the browser successfully received.
-        page.on('response', async (response) => {
-            const request = response.request();
+        page.on('request', (request) => {
             const requestUrl = request.url();
             const resourceType = request.resourceType();
-            const status = response.status();
-            const requestHost = new URL(requestUrl).host;
-
-            // Ignore failures and common noise
-            if (status < 200 || status >= 400 || requestUrl.includes('google-analytics.com')) {
-                return;
-            }
-
-            // Only capture requests to the main domain or its subdomains
-            if (!requestHost.endsWith(mainHost)) {
-                return;
-            }
-
             const headers = request.headers();
+
+            // Ignore standard noise
+            const IGNORED_DOMAINS = [
+                'google-analytics.com', 'googletagmanager.com', 'gstatic.com', 'doubleclick.net'
+            ];
+            if (IGNORED_DOMAINS.some(domain => requestUrl.includes(domain)) ||
+                ['font', 'image', 'media', 'stylesheet'].includes(resourceType)) {
+                return;
+            }
+
             const requestData = {
                 url: requestUrl,
                 headers: {
@@ -60,40 +55,67 @@ class BrowserService {
                     'accept-encoding': headers['accept-encoding'],
                 },
                 method: request.method(),
+                resourceType: resourceType,
             };
+            activeRequests.set(requestUrl, requestData);
+        });
 
-            // Detect JS files
-            if (resourceType === 'script' || requestUrl.endsWith('.js')) {
+        page.on('response', async (response) => {
+            const requestUrl = response.url();
+            const status = response.status();
+            const requestData = activeRequests.get(requestUrl);
+            activeRequests.delete(requestUrl);
+
+            if (!requestData || status < 200 || status >= 400) return;
+
+            const contentType = response.headers()['content-type'] || '';
+
+            if (requestData.resourceType === 'script' || requestUrl.endsWith('.js') || contentType.includes('javascript')) {
                 try {
-                    // Grab content directly from the browser's memory
                     const jsContent = await response.text();
                     console.log(`>> Captured JS Content: ${requestUrl.substring(0, 80)}...`);
                     onData('js', { ...requestData, content: jsContent });
                 } catch (error) {
-                    // Some responses (like redirects) can't have their text read
+                    // Ignore
                 }
-            } 
-            // Capture all other relevant API/data requests
-            else if (!['document', 'stylesheet', 'image', 'font', 'media'].includes(resourceType)) {
-                console.log(`>> Discovered Path: [${resourceType}] ${requestUrl}`);
+            } else if (requestUrl.endsWith('.json') || contentType.includes('json') || contentType.includes('text/plain')) {
+                try {
+                    const content = await response.text();
+                    console.log(`>> Captured JSON/Text Content: ${requestUrl.substring(0, 80)}...`);
+                    onData('path', { ...requestData, content: content });
+                } catch (error) {
+                    // Ignore
+                }
+            } else if (requestUrl.startsWith('ws')) {
+                console.log(`>> Discovered WebSocket: ${requestUrl}`);
+                onData('path', requestData);
+            } else if (!['document'].includes(requestData.resourceType)) {
+                console.log(`>> Discovered Path: [${requestData.resourceType}] ${requestUrl}`);
                 onData('path', requestData);
             }
+        });
+
+        // CRITICAL: Dedicated WebSocket Listener to catch hidden domains like engine.livetables.io
+        page.on('websocket', ws => {
+            const wsUrl = ws.url();
+            console.log(`>> Discovered WebSocket (Event): ${wsUrl}`);
+            onData('path', {
+                url: wsUrl,
+                method: 'GET',
+                headers: {},
+                resourceType: 'websocket',
+                content: '' // WebSockets usually don't have static content to scrape urls from
+            });
         });
 
         console.log(`Navigating to: ${url}`);
         
         try {
-            // Increased timeout to 60s for slow vendor handshakes
             await page.goto(url, { waitUntil: 'load', timeout: 60000 });
             
-            console.log("Page loaded. Waiting 15 seconds for game engine to boot and authenticate...");
-            
-            // This is the critical "Handshake Wait"
-            await page.waitForTimeout(60000); 
-            
-            // Optional: Take a screenshot to see what the browser is seeing
-            // await page.screenshot({ path: 'last_scan.png' });
-            // console.log("Screenshot saved as last_scan.png");
+            const handshakeWaitTime = parseInt(process.env.HANDSHAKE_WAIT_TIME || '60000', 10);
+            console.log(`Page loaded. Waiting ${handshakeWaitTime / 1000} seconds for game engine to boot...`);
+            await page.waitForTimeout(handshakeWaitTime); 
 
         } catch (error) {
             console.error(`Navigation error: ${error.message}`);

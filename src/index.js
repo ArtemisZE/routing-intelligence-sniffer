@@ -19,9 +19,19 @@ async function main() {
     const redisService = new RedisService();
     const comparisonService = new ComparisonService(redisService);
 
+    // Save metadata (Primary Domain)
+    try {
+        const primaryDomain = new URL(gameUrl).hostname;
+        await redisService.redis.hset(`vendor:${vendorName}:metadata`, 'primaryDomain', primaryDomain);
+        console.log(`Saved Primary Domain to Redis: ${primaryDomain}`);
+    } catch (e) {
+        console.error("Invalid Game URL, could not determine primary domain.");
+    }
+
     const discoveredData = {
         paths: [],
         jsVariables: [],
+        domains: new Set()
     };
 
     const onData = (type, data) => {
@@ -34,9 +44,22 @@ async function main() {
                     variables,
                 });
             }
+            // Discover hidden domains in JS content
+            const urls = regexService.extractUrls(data.content);
+            urls.forEach(u => discoveredData.domains.add(u));
+            
         } else if (type === 'path') {
             console.log(`Discovered path: ${data.url}`);
             discoveredData.paths.push(data);
+            try {
+                discoveredData.domains.add(new URL(data.url).hostname);
+            } catch(e){}
+            
+            // CRITICAL: Scan JSON/API responses for hidden domains (like engine.livetables.io)
+            if (data.content) {
+                const urls = regexService.extractUrls(data.content);
+                urls.forEach(u => discoveredData.domains.add(u));
+            }
         }
     };
 
@@ -55,12 +78,16 @@ async function main() {
                 await redisService.addVariable(vendorName, variable.variable, JSON.stringify(variable.associations));
             }
         }
+        for (const domain of discoveredData.domains) {
+            await redisService.addDomain(vendorName, domain);
+        }
 
         const output = {
             vendor: vendorName,
             gameUrl: gameUrl,
             discoveredPaths: discoveredData.paths.map(p => p.url),
             discoveredVariables: discoveredData.jsVariables,
+            discoveredDomains: [...discoveredData.domains],
             analysis: pathAnalysis,
         };
 

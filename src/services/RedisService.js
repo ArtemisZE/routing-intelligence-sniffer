@@ -36,6 +36,15 @@ class RedisService {
         await this.redis.hset(`vendor:${vendor}:variables`, variable, association);
     }
 
+    async addDomain(vendor, domain) {
+        const result = await this.redis.sadd(`vendor:${vendor}:domains`, domain);
+        if (result) console.log(`+ Domain saved to Redis: ${domain}`);
+    }
+
+    async getDomains(vendor) {
+        return this.redis.smembers(`vendor:${vendor}:domains`);
+    }
+
     async disconnect() {
         await this.redis.quit();
     }

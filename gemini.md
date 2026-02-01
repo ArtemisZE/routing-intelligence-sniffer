@@ -1,39 +1,50 @@
-# Role
-You are a Senior Backend Engineer specializing in Web Scraping, Network Security, and Reverse Engineering.
+# Gemini Project: Smart Routing Sniffer
 
-# Objective
-Generate a Node.js application designed to automate the discovery phase of "Smart Routing" project. The app must identify all external domains and paths a web-based game connects to, analyze JavaScript files for minified variable names, and store this intelligence in Redis to identify patterns across different games from the same vendor.
+## 1. Objective
+Create a Node.js application that automates the discovery and proxy configuration for complex, multi-domain web-based games. The final output must be a single, self-contained `nginx.conf` file that allows the game to be played seamlessly from a local server.
 
-# Technical Architecture
-##### 1. Headless Network Interceptor (Playwright)
-- Action: Use Playwright (Chromium) to launch a provided "Game URL".
-- Interception: Hook into the request event to capture every outgoing HTTP/HTTPS/WebSocket request.
-- Filtering: * Ignore standard noise (Google Analytics, fonts, browser extensions).
-    - Capture everything else, specifically targeting .js, .json, and /ws (WebSocket) endpoints.
-- Data Collection: For every request, record the full URL, the headers (specifically Host and Accept-Encoding), and the request method.
+## 2. Core Architecture
+The process is a two-step flow:
+1.  **Sniffing & Caching:** A Node.js script launches a headless browser to capture all network activity and discover backend domains. This intelligence is stored in Redis.
+2.  **Generation:** A second Node.js script reads the Redis cache and generates a single, optimized `nginx.conf` file.
 
-##### 2. JavaScript Variable Analyzer
-- Action: When a .js file is intercepted, the app should download the content.
-- Logic: Perform a Regex-based search to identify "Smart Routing" targets.
-    - Search for patterns like %variable%.server, %variable%.staticUrl, %variable%.api.
-    - The goal is to identify if the variable name is n, d, e, etc., as seen in minified vendor code.
-- Output: Return a list of candidate variables and the strings they are associated with.
+---
 
-##### 3. Redis Intelligence Layer
-- Structure: Store data using a Vendor-based key system: vendor:{name}:paths and vendor:{name}:variables.
-- Commonality Logic: * When a new Game URL is scanned, compare its discovered paths with the existing paths in Redis for that vendor.
-    - Mark paths as "Static" (same across all games) or "Dynamic" (contains game-specific IDs or hashes).
-- Nginx Generator Hint: Based on the commonality, suggest which paths should be location blocks and which should be body:gsub rules in Lua.
+### 2.1. Sniffer (`src/index.js`)
+This script is the intelligence-gathering engine. It must be comprehensive to enable full automation.
 
-##### 4. Code Requirements
-- Language: Node.js (Latest LTS).
-- Libraries: playwright, ioredis, dotenv.
-- Input: A CLI command or simple API where I pass vendor_name and game_url.
-- Output: A JSON summary of all discovered domains and suggested "Surgical Replacements".
+*   **Input:** `node src/index.js <vendor_name> <game_url>`
+*   **Actions:**
+    1.  **Clear Cache:** Before starting, it will delete all existing Redis data for the specified `<vendor_name>` to ensure a clean run.
+    2.  **Launch Browser:** It uses Playwright to launch a headless browser, navigating to the provided `<game_url>`.
+    3.  **Comprehensive Interception:**
+        *   It listens for standard network requests (`page.on('request'/'response')`).
+        *   **Crucially**, it adds a dedicated listener for WebSockets (`page.on('websocket')`) to discover game engine or chat domains (e.g., `engine.livetables.io`).
+    4.  **Deep Content Analysis:**
+        *   It captures the content of all downloaded assets (HTML, JS, JSON).
+        *   It scans the text content of these assets for any hardcoded absolute URLs (`https://...` or `wss://...`) to find domains that are not immediately requested.
+    5.  **Variable Analysis:** It scans JavaScript files for patterns like `e.api = "..."` to identify dynamic API endpoints.
+*   **Redis Output:**
+    *   `vendor:{name}:metadata`: Stores the **Primary Domain** (extracted from the initial `<game_url>`).
+    *   `vendor:{name}:paths`: A set of all unique request paths and their original hostnames.
+    *   `vendor:{name}:domains`: A set of all unique hostnames discovered through network interception and deep content analysis.
+    *   `vendor:{name}:variables`: A hash of discovered variable names and their associated properties.
 
-#### Instructions for Gemini CLI
-- Initialize a project with a clean directory structure: /src, /scripts, /test.
-- Implement a BrowserService using Playwright to handle the network sniffing.
-- Implement a RegexService to scan for variable patterns in JS content.
-- Implement a ComparisonService that pulls existing Redis data to identify vendor-level commonalities.
-- Provide a README.md explaining how to run the scraper for a new game.
+### 2.2. NGINX Generator (`scripts/generate-nginx.js`)
+This script creates the final, self-contained proxy configuration.
+
+*   **Input:** `node scripts/generate-nginx.js <vendor_name>`
+*   **Actions:**
+    1.  **Fetch Intelligence:** It reads all data for the `<vendor_name>` from Redis (`metadata`, `paths`, `domains`, `variables`).
+    2.  **Domain Logic:** It identifies the `primaryDomain` from the metadata and compiles a list of all other unique `secondaryDomains`.
+    3.  **Generate `nginx.conf`:** It constructs a single configuration file with the following features, inspired by production examples:
+        *   **Path-Based Routing:** For each unique path discovered, it generates a specific `location /path/to/asset { ... }` block that `proxy_pass`es the request to the correct upstream host (retrieved from the `paths` data). This ensures `engine.livetables.io` requests go to the right place.
+        *   **Fallback to Primary:** A root `location / { ... }` acts as a fallback, proxying any unknown paths to the `primaryDomain`.
+        *   **WebSocket Support:** All generated `location` blocks include the necessary `Upgrade` and `Connection` headers to correctly proxy WebSockets.
+        *   **Body Rewriting (Simplified):** It uses `body_filter_by_lua_block` on the root `location /` and on any other text-based locations (like JS files). This **inlined** Lua script is responsible for:
+            *   **Multi-Domain Replacement:** Iterating through *all* discovered domains (primary and secondary) and replacing them with the proxy's address (`$http_host`).
+            *   **Variable Injection:** Replacing dynamic variable assignments (e.g., `r.api = "..."`) using the data from Redis.
+            *   **Shield Injection:** A minified, single-line version of the client-side "Shield" JavaScript is embedded directly inside the Lua block and injected into the `<head>` of the initial HTML document. This is safer than using a massive `sub_filter`.
+        *   **Header Cleaning:** It uses `header_filter_by_lua_block` to remove the `Content-Length` header on modified responses, preventing content truncation errors. It also strips security headers like `Content-Security-Policy` and `X-Frame-Options`.
+
+This architecture ensures that **no manual domain input is required** (as long as the sniffer runs successfully) and the output is a **single, deployable `nginx.conf` file**, fulfilling your request for simplicity and automation.

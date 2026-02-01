@@ -26,6 +26,25 @@ class RegexService {
 
         return results;
     }
+
+    extractUrls(content) {
+        if (typeof content !== 'string') return [];
+        
+        const urls = new Set();
+        // Match http, https, ws, wss URLs
+        const urlRegex = /['"]((?:https?|wss?):\/\/[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}[^'"\s]*)['"]/g;
+        
+        let match;
+        while ((match = urlRegex.exec(content)) !== null) {
+            try {
+                const urlObj = new URL(match[1]);
+                urls.add(urlObj.hostname);
+            } catch (e) {
+                // Ignore invalid URLs
+            }
+        }
+        return [...urls];
+    }
 }
 
 module.exports = RegexService;
