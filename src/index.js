@@ -65,7 +65,18 @@ async function main() {
 
     try {
         await browserService.launch();
-        await browserService.interceptRequests(gameUrl, onData);
+        const finalUrl = await browserService.interceptRequests(gameUrl, onData);
+
+        // Check if the game redirected to a new domain
+        if (finalUrl) {
+            const finalDomain = new URL(finalUrl).hostname;
+            const initialDomain = new URL(gameUrl).hostname;
+            
+            if (finalDomain !== initialDomain) {
+                console.log(`Redirect detected! Updating Primary Domain from ${initialDomain} to ${finalDomain}`);
+                await redisService.redis.hset(`vendor:${vendorName}:metadata`, 'primaryDomain', finalDomain);
+            }
+        }
 
         const pathAnalysis = await comparisonService.analyzePaths(vendorName, discoveredData.paths);
 

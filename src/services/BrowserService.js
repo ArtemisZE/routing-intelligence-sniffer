@@ -89,7 +89,8 @@ class BrowserService {
             } else if (requestUrl.startsWith('ws')) {
                 console.log(`>> Discovered WebSocket: ${requestUrl}`);
                 onData('path', requestData);
-            } else if (!['document'].includes(requestData.resourceType)) {
+            } else {
+                // We capture 'document' and all other valid types to ensure entry points are proxied correctly.
                 console.log(`>> Discovered Path: [${requestData.resourceType}] ${requestUrl}`);
                 onData('path', requestData);
             }
@@ -116,6 +117,8 @@ class BrowserService {
             const handshakeWaitTime = parseInt(process.env.HANDSHAKE_WAIT_TIME || '60000', 10);
             console.log(`Page loaded. Waiting ${handshakeWaitTime / 1000} seconds for game engine to boot...`);
             await page.waitForTimeout(handshakeWaitTime); 
+            
+            return page.url();
 
         } catch (error) {
             console.error(`Navigation error: ${error.message}`);
