@@ -19,11 +19,12 @@ async function main() {
     const redisService = new RedisService();
     const comparisonService = new ComparisonService(redisService);
 
-    // Save metadata (Primary Domain)
+    // Save metadata (Primary Domain & Original Domain)
     try {
-        const primaryDomain = new URL(gameUrl).hostname;
-        await redisService.redis.hset(`vendor:${vendorName}:metadata`, 'primaryDomain', primaryDomain);
-        console.log(`Saved Primary Domain to Redis: ${primaryDomain}`);
+        const originalDomain = new URL(gameUrl).hostname;
+        await redisService.redis.hset(`vendor:${vendorName}:metadata`, 'primaryDomain', originalDomain);
+        await redisService.redis.hset(`vendor:${vendorName}:metadata`, 'originalDomain', originalDomain);
+        console.log(`Saved Primary/Original Domain to Redis: ${originalDomain}`);
     } catch (e) {
         console.error("Invalid Game URL, could not determine primary domain.");
     }
@@ -67,14 +68,16 @@ async function main() {
         await browserService.launch();
         const finalUrl = await browserService.interceptRequests(gameUrl, onData);
 
-        // Check if the game redirected to a new domain
+        // Capture Redirects
         if (finalUrl) {
             const finalDomain = new URL(finalUrl).hostname;
-            const initialDomain = new URL(gameUrl).hostname;
+            const originalDomain = new URL(gameUrl).hostname;
             
-            if (finalDomain !== initialDomain) {
-                console.log(`Redirect detected! Updating Primary Domain from ${initialDomain} to ${finalDomain}`);
-                await redisService.redis.hset(`vendor:${vendorName}:metadata`, 'primaryDomain', finalDomain);
+            await redisService.redis.hset(`vendor:${vendorName}:metadata`, 'finalDomain', finalDomain);
+            
+            if (finalDomain !== originalDomain) {
+                console.log(`ℹRedirect Detected: ${originalDomain} -> ${finalDomain}`);
+                console.log(`Saved 'finalDomain' to Redis for advanced routing.`);
             }
         }
 
